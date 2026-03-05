@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 媒体水印擦除工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        .canvas-container {
+            touch-action: none;
+            position: relative;
+            cursor: crosshair;
+        }
+        #maskCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        .loading-spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid #3b82f6;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+
+    <div class="max-w-4xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">AI 媒体水印擦除工具</h1>
+            <p class="text-gray-600">快速遮盖或移除图片与视频中的 AI 生成水印</p>
+        </header>
+
+        <!-- Main Card -->
+        <div class="bg-white rounded-2xl shadow-xl p-6 mb-8">
+            
+            <!-- Upload Section -->
+            <div id="uploadArea" class="border-2 border-dashed border-gray-300 rounded-xl p-10 text-center transition-colors hover:border-blue-500 cursor-pointer mb-6">
+                <input type="file" id="fileInput" class="hidden" accept="image/*,video/*">
+                <div class="flex flex-col items-center">
+                    <i data-lucide="upload-cloud" class="w-12 h-12 text-blue-500 mb-4"></i>
+                    <p class="text-lg font-medium text-gray-700">点击或拖拽文件到这里</p>
+                    <p class="text-sm text-gray-500 mt-2">支持 JPG, PNG, MP4 等格式</p>
+                </div>
+            </div>
+
+            <!-- Workspace (Hidden by default) -->
+            <div id="workspace" class="hidden">
+                <div class="flex flex-wrap gap-4 mb-4 justify-between items-center">
+                    <div class="flex gap-2">
+                        <button id="resetBtn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 flex items-center gap-2">
+                            <i data-lucide="rotate-ccw" class="w-4 h-4"></i> 重置
+                        </button>
+                    </div>
+                    <div id="imageControls" class="flex gap-2 hidden">
+                        <span class="text-sm text-gray-500 self-center">提示：在图片上框选水印区域</span>
+                        <button id="processImgBtn" class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow-md transition-all">
+                            立即擦除
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Preview Display -->
+                <div id="previewContainer" class="relative overflow-hidden bg-black rounded-lg flex justify-center items-center min-h-[300px]">
+                    <!-- Image Canvas -->
+                    <div id="imgWrapper" class="canvas-container hidden">
+                        <canvas id="mainCanvas"></canvas>
+                        <canvas id="maskCanvas"></canvas>
+                    </div>
+                    <!-- Video Player -->
+                    <div id="videoWrapper" class="hidden w-full relative">
+                        <video id="videoPlayer" controls class="w-full max-h-[600px]"></video>
+                        <div id="videoOverlay" class="absolute bg-black/50 border border-dashed border-white cursor-move hidden" style="width: 100px; height: 40px; top: 80%; right: 10px;">
+                            <div class="absolute -top-6 left-0 text-[10px] bg-black text-white px-1">水印遮罩</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Result Actions -->
+                <div id="resultActions" class="mt-6 flex justify-center hidden">
+                    <a id="downloadBtn" href="#" class="px-8 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 font-bold shadow-lg flex items-center gap-2">
+                        <i data-lucide="download" class="w-5 h-5"></i> 下载处理后的文件
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <section class="grid md:grid-cols-2 gap-6 text-sm text-gray-600">
+            <div class="bg-blue-50 p-4 rounded-lg">
+                <h3 class="font-bold text-blue-800 mb-2 flex items-center gap-2">
+                    <i data-lucide="image" class="w-4 h-4"></i> 图片处理
+                </h3>
+                <p>使用鼠标在图片水印位置拖拽出一个矩形，点击“立即擦除”，系统将利用周围像素进行内容补全。</p>
+            </div>
+            <div class="bg-purple-50 p-4 rounded-lg">
+                <h3 class="font-bold text-purple-800 mb-2 flex items-center gap-2">
+                    <i data-lucide="video" class="w-4 h-4"></i> 视频处理
+                </h3>
+                <p>对于视频，您可以移动半透明遮罩覆盖水印，或通过下载后在播放器中调整比例实现裁剪效果。</p>
+            </div>
+        </section>
+
+        <!-- Notification Toast -->
+        <div id="toast" class="fixed bottom-10 left-1/2 -translate-x-1/2 px-6 py-3 bg-gray-800 text-white rounded-full opacity-0 transition-opacity pointer-events-none">
+            消息提示
+        </div>
+    </div>
+
+    <script>
+        // --- State & Config ---
+        const fileInput = document.getElementById('fileInput');
+        const uploadArea = document.getElementById('uploadArea');
+        const workspace = document.getElementById('workspace');
+        const mainCanvas = document.getElementById('mainCanvas');
+        const maskCanvas = document.getElementById('maskCanvas');
+        const ctx = mainCanvas.getContext('2d');
+        const mctx = maskCanvas.getContext('2d');
+        const videoPlayer = document.getElementById('videoPlayer');
+        const videoWrapper = document.getElementById('videoWrapper');
+        const imgWrapper = document.getElementById('imgWrapper');
+        const videoOverlay = document.getElementById('videoOverlay');
+        const toast = document.getElementById('toast');
+        
+        let currentFile = null;
+        let isDrawing = false;
+        let startX, startY;
+        let selectionRect = { x: 0, y: 0, w: 0, h: 0 };
+        let originalImage = null;
+
+        // Initialize Icons
+        lucide.createIcons();
+
+        // --- Utils ---
+        function showToast(msg) {
+            toast.innerText = msg;
+            toast.style.opacity = '1';
+            setTimeout(() => toast.style.opacity = '0', 3000);
+        }
+
+        // --- File Handling ---
+        uploadArea.addEventListener('click', () => fileInput.click());
+        uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('border-blue-500'); });
+        uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('border-blue-500'));
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        function handleFiles(files) {
+            if (files.length === 0) return;
+            const file = files[0];
+            currentFile = file;
+            
+            uploadArea.classList.add('hidden');
+            workspace.classList.remove('hidden');
+            document.getElementById('resultActions').classList.add('hidden');
+
+            if (file.type.startsWith('image/')) {
+                setupImageMode(file);
+            } else if (file.type.startsWith('video/')) {
+                setupVideoMode(file);
+            }
+        }
+
+        function setupImageMode(file) {
+            imgWrapper.classList.remove('hidden');
+            videoWrapper.classList.add('hidden');
+            document.getElementById('imageControls').classList.remove('hidden');
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    const maxWidth = workspace.offsetWidth;
+                    const scale = Math.min(1, maxWidth / img.width);
+                    
+                    mainCanvas.width = img.width * scale;
+                    mainCanvas.height = img.height * scale;
+                    maskCanvas.width = mainCanvas.width;
+                    maskCanvas.height = mainCanvas.height;
+                    
+                    ctx.drawImage(img, 0, 0, mainCanvas.width, mainCanvas.height);
+                    showToast("图片已加载，请框选水印");
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function setupVideoMode(file) {
+            imgWrapper.classList.add('hidden');
+            videoWrapper.classList.remove('hidden');
+            document.getElementById('imageControls').classList.add('hidden');
+            videoOverlay.classList.remove('hidden');
+
+            const url = URL.createObjectURL(file);
+            videoPlayer.src = url;
+            showToast("视频已加载，请移动遮罩覆盖水印");
+        }
+
+        // --- Drawing Logic ---
+        imgWrapper.addEventListener('mousedown', startSelection);
+        imgWrapper.addEventListener('mousemove', drawSelection);
+        imgWrapper.addEventListener('mouseup', endSelection);
+
+        function startSelection(e) {
+            isDrawing = true;
+            const rect = mainCanvas.getBoundingClientRect();
+            startX = e.clientX - rect.left;
+            startY = e.clientY - rect.top;
+        }
+
+        function drawSelection(e) {
+            if (!isDrawing) return;
+            const rect = mainCanvas.getBoundingClientRect();
+            const currX = e.clientX - rect.left;
+            const currY = e.clientY - rect.top;
+
+            selectionRect = {
+                x: Math.min(startX, currX),
+                y: Math.min(startY, currY),
+                w: Math.abs(currX - startX),
+                h: Math.abs(currY - startY)
+            };
+
+            mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            mctx.strokeStyle = '#3b82f6';
+            mctx.lineWidth = 2;
+            mctx.setLineDash([5, 5]);
+            mctx.strokeRect(selectionRect.x, selectionRect.y, selectionRect.w, selectionRect.h);
+            mctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
+            mctx.fillRect(selectionRect.x, selectionRect.y, selectionRect.w, selectionRect.h);
+        }
+
+        function endSelection() {
+            isDrawing = false;
+        }
+
+        // --- Processing Logic (Simple Inpainting) ---
+        document.getElementById('processImgBtn').addEventListener('click', () => {
+            if (selectionRect.w < 5 || selectionRect.h < 5) {
+                showToast("请先在水印位置画一个矩形框");
+                return;
+            }
+
+            const btn = document.getElementById('processImgBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="loading-spinner"></div> 处理中...';
+
+            setTimeout(() => {
+                // 执行基础像素填充：从选区边缘向内拉伸像素（简易版擦除）
+                const { x, y, w, h } = selectionRect;
+                const imageData = ctx.getImageData(x, y, w, h);
+                const data = imageData.data;
+
+                // 简单的边缘拉伸填充算法
+                for (let j = 0; j < h; j++) {
+                    for (let i = 0; i < w; i++) {
+                        const idx = (j * w + i) * 4;
+                        // 获取选区上方或侧方的像素进行填充
+                        const sourceX = x + i;
+                        const sourceY = y - 2 > 0 ? y - 2 : y + h + 2;
+                        const sourcePixel = ctx.getImageData(sourceX, sourceY, 1, 1).data;
+                        
+                        data[idx] = sourcePixel[0];
+                        data[idx+1] = sourcePixel[1];
+                        data[idx+2] = sourcePixel[2];
+                        data[idx+3] = 255;
+                    }
+                }
+                
+                ctx.putImageData(imageData, x, y);
+                // 应用模糊以平滑边缘
+                ctx.filter = 'blur(4px)';
+                ctx.drawImage(mainCanvas, x, y, w, h, x, y, w, h);
+                ctx.filter = 'none';
+
+                mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                btn.disabled = false;
+                btn.innerText = '立即擦除';
+                
+                const downloadBtn = document.getElementById('downloadBtn');
+                downloadBtn.href = mainCanvas.toDataURL('image/png');
+                downloadBtn.download = "no_watermark_" + currentFile.name;
+                document.getElementById('resultActions').classList.remove('hidden');
+                
+                showToast("擦除完成！");
+            }, 800);
+        });
+
+        // --- Video Overlay Movement ---
+        let isDraggingOverlay = false;
+        videoOverlay.addEventListener('mousedown', (e) => {
+            isDraggingOverlay = true;
+            videoOverlay.style.cursor = 'grabbing';
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDraggingOverlay) return;
+            const rect = videoWrapper.getBoundingClientRect();
+            let x = e.clientX - rect.left - (videoOverlay.offsetWidth / 2);
+            let y = e.clientY - rect.top - (videoOverlay.offsetHeight / 2);
+
+            // Bounds check
+            x = Math.max(0, Math.min(x, rect.width - videoOverlay.offsetWidth));
+            y = Math.max(0, Math.min(y, rect.height - videoOverlay.offsetHeight));
+
+            videoOverlay.style.left = x + 'px';
+            videoOverlay.style.top = y + 'px';
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDraggingOverlay = false;
+            if(videoOverlay) videoOverlay.style.cursor = 'move';
+        });
+
+        // --- Reset ---
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            location.reload();
+        });
+
+    </script>
+</body>
+</html>
