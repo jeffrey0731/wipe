@@ -17,6 +17,7 @@
             top: 0;
             left: 0;
             pointer-events: none;
+            opacity: 0.5;
         }
         .loading-spinner {
             border: 4px solid rgba(255, 255, 255, 0.3);
@@ -56,15 +57,28 @@
 
             <!-- Workspace (Hidden by default) -->
             <div id="workspace" class="hidden">
-                <div class="flex flex-wrap gap-4 mb-4 justify-between items-center">
-                    <div class="flex gap-2">
+                <div class="flex flex-col md:flex-row gap-4 mb-4 justify-between md:items-center">
+                    <div class="flex gap-2 shrink-0">
                         <button id="resetBtn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 flex items-center gap-2">
                             <i data-lucide="rotate-ccw" class="w-4 h-4"></i> 重置
                         </button>
                     </div>
-                    <div id="imageControls" class="flex gap-2 hidden">
-                        <span class="text-sm text-gray-500 self-center">提示：在图片上框选水印区域</span>
-                        <button id="processImgBtn" class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow-md transition-all">
+                    <div id="imageControls" class="flex flex-wrap items-center justify-between gap-3 bg-gray-100 p-2 rounded-lg border border-gray-200 hidden flex-1">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <div class="flex bg-white rounded-md border p-1 shadow-sm shrink-0">
+                                <button id="toolRect" class="px-3 py-1 rounded bg-blue-100 text-blue-700 text-sm font-medium transition-colors">框选</button>
+                                <button id="toolBrush" class="px-3 py-1 rounded text-gray-600 hover:bg-gray-50 text-sm font-medium transition-colors">画笔</button>
+                            </div>
+                            <div id="brushSettings" class="flex items-center gap-2 hidden shrink-0">
+                                <label class="text-sm text-gray-600">大小:</label>
+                                <input type="range" id="brushSize" min="5" max="80" value="20" class="w-20 accent-blue-600">
+                            </div>
+                            <div class="hidden md:block h-6 w-px bg-gray-300 mx-1"></div>
+                            <button id="clearMaskBtn" class="text-sm text-red-500 hover:text-red-700 flex items-center gap-1 transition-colors shrink-0">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i> 清除蒙版
+                            </button>
+                        </div>
+                        <button id="processImgBtn" class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow-md transition-all whitespace-nowrap">
                             立即擦除
                         </button>
                     </div>
@@ -101,7 +115,7 @@
                 <h3 class="font-bold text-blue-800 mb-2 flex items-center gap-2">
                     <i data-lucide="image" class="w-4 h-4"></i> 图片处理
                 </h3>
-                <p>使用鼠标在图片水印位置拖拽出一个矩形，点击“立即擦除”，系统将利用周围像素进行内容补全。</p>
+                <p>选择“框选”或“画笔”工具标记水印位置。支持调整画笔大小，若涂抹错误可点击“清除蒙版”重置。点击“立即擦除”即可进行内容补全。</p>
             </div>
             <div class="bg-purple-50 p-4 rounded-lg">
                 <h3 class="font-bold text-purple-800 mb-2 flex items-center gap-2">
@@ -137,6 +151,12 @@
         let startX, startY;
         let selectionRect = { x: 0, y: 0, w: 0, h: 0 };
         let originalImage = null;
+        
+        // --- Tool State ---
+        let currentTool = 'rect';
+        let brushSize = 20;
+        let brushBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        let hasMask = false;
 
         // Initialize Icons
         lucide.createIcons();
@@ -146,6 +166,49 @@
             toast.innerText = msg;
             toast.style.opacity = '1';
             setTimeout(() => toast.style.opacity = '0', 3000);
+        }
+
+        // --- Tools UI Logic ---
+        const toolRect = document.getElementById('toolRect');
+        const toolBrush = document.getElementById('toolBrush');
+        const brushSettings = document.getElementById('brushSettings');
+        const brushSizeInput = document.getElementById('brushSize');
+        const clearMaskBtn = document.getElementById('clearMaskBtn');
+
+        if(toolRect) toolRect.addEventListener('click', () => setTool('rect'));
+        if(toolBrush) toolBrush.addEventListener('click', () => setTool('brush'));
+        if(brushSizeInput) brushSizeInput.addEventListener('input', (e) => brushSize = parseInt(e.target.value));
+        if(clearMaskBtn) clearMaskBtn.addEventListener('click', clearMask);
+
+        function setTool(tool) {
+            currentTool = tool;
+            if (tool === 'rect') {
+                toolRect.classList.add('bg-blue-100', 'text-blue-700');
+                toolRect.classList.remove('text-gray-600', 'hover:bg-gray-50');
+                toolBrush.classList.remove('bg-blue-100', 'text-blue-700');
+                toolBrush.classList.add('text-gray-600', 'hover:bg-gray-50');
+                brushSettings.classList.add('hidden');
+            } else {
+                toolBrush.classList.add('bg-blue-100', 'text-blue-700');
+                toolBrush.classList.remove('text-gray-600', 'hover:bg-gray-50');
+                toolRect.classList.remove('bg-blue-100', 'text-blue-700');
+                toolRect.classList.add('text-gray-600', 'hover:bg-gray-50');
+                brushSettings.classList.remove('hidden');
+            }
+        }
+
+        function clearMask() {
+            mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            selectionRect = { x: 0, y: 0, w: 0, h: 0 };
+            brushBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+            hasMask = false;
+        }
+
+        function updateBrushBounds(x, y) {
+            brushBounds.minX = Math.min(brushBounds.minX, x - brushSize/2);
+            brushBounds.minY = Math.min(brushBounds.minY, y - brushSize/2);
+            brushBounds.maxX = Math.max(brushBounds.maxX, x + brushSize/2);
+            brushBounds.maxY = Math.max(brushBounds.maxY, y + brushSize/2);
         }
 
         // --- File Handling ---
@@ -194,7 +257,8 @@
                     maskCanvas.height = mainCanvas.height;
                     
                     ctx.drawImage(img, 0, 0, mainCanvas.width, mainCanvas.height);
-                    showToast("图片已加载，请框选水印");
+                    clearMask();
+                    showToast("图片已加载，请标记水印区域");
                 };
                 img.src = e.target.result;
             };
@@ -216,12 +280,30 @@
         imgWrapper.addEventListener('mousedown', startSelection);
         imgWrapper.addEventListener('mousemove', drawSelection);
         imgWrapper.addEventListener('mouseup', endSelection);
+        imgWrapper.addEventListener('mouseleave', endSelection);
 
         function startSelection(e) {
             isDrawing = true;
+            hasMask = true;
             const rect = mainCanvas.getBoundingClientRect();
             startX = e.clientX - rect.left;
             startY = e.clientY - rect.top;
+
+            if (currentTool === 'brush') {
+                mctx.beginPath();
+                mctx.moveTo(startX, startY);
+                mctx.lineCap = 'round';
+                mctx.lineJoin = 'round';
+                mctx.lineWidth = brushSize;
+                mctx.strokeStyle = '#3b82f6';
+                mctx.lineTo(startX, startY); // 立即绘制一个点
+                mctx.stroke();
+                updateBrushBounds(startX, startY);
+            } else {
+                clearMask(); // 开始新框选前清除旧蒙版
+                isDrawing = true;
+                hasMask = true;
+            }
         }
 
         function drawSelection(e) {
@@ -230,51 +312,74 @@
             const currX = e.clientX - rect.left;
             const currY = e.clientY - rect.top;
 
-            selectionRect = {
-                x: Math.min(startX, currX),
-                y: Math.min(startY, currY),
-                w: Math.abs(currX - startX),
-                h: Math.abs(currY - startY)
-            };
+            if (currentTool === 'rect') {
+                selectionRect = {
+                    x: Math.min(startX, currX),
+                    y: Math.min(startY, currY),
+                    w: Math.abs(currX - startX),
+                    h: Math.abs(currY - startY)
+                };
 
-            mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
-            mctx.strokeStyle = '#3b82f6';
-            mctx.lineWidth = 2;
-            mctx.setLineDash([5, 5]);
-            mctx.strokeRect(selectionRect.x, selectionRect.y, selectionRect.w, selectionRect.h);
-            mctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
-            mctx.fillRect(selectionRect.x, selectionRect.y, selectionRect.w, selectionRect.h);
+                mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                mctx.fillStyle = '#3b82f6';
+                mctx.fillRect(selectionRect.x, selectionRect.y, selectionRect.w, selectionRect.h);
+            } else if (currentTool === 'brush') {
+                mctx.lineTo(currX, currY);
+                mctx.stroke();
+                updateBrushBounds(currX, currY);
+            }
         }
 
         function endSelection() {
+            if (!isDrawing) return;
             isDrawing = false;
+            
+            if (currentTool === 'brush') {
+                selectionRect = {
+                    x: Math.max(0, brushBounds.minX),
+                    y: Math.max(0, brushBounds.minY),
+                    w: Math.min(mainCanvas.width - Math.max(0, brushBounds.minX), brushBounds.maxX - brushBounds.minX),
+                    h: Math.min(mainCanvas.height - Math.max(0, brushBounds.minY), brushBounds.maxY - brushBounds.minY)
+                };
+            }
         }
 
         // --- Processing Logic (Simple Inpainting) ---
         document.getElementById('processImgBtn').addEventListener('click', () => {
-            if (selectionRect.w < 5 || selectionRect.h < 5) {
-                showToast("请先在水印位置画一个矩形框");
+            if (!hasMask || (currentTool === 'rect' && (selectionRect.w < 5 || selectionRect.h < 5))) {
+                showToast("请先使用框选或画笔工具标记水印");
                 return;
             }
 
             const btn = document.getElementById('processImgBtn');
             btn.disabled = true;
-            btn.innerHTML = '<div class="loading-spinner"></div> 处理中...';
+            btn.innerHTML = '<div class="loading-spinner inline-block"></div> 处理中...';
 
             setTimeout(() => {
-                // 执行基础像素填充：从选区边缘向内拉伸像素（简易版擦除）
                 const { x, y, w, h } = selectionRect;
-                const imageData = ctx.getImageData(x, y, w, h);
+                
+                // 扩展选区边缘以保证有足够的像素采样
+                const safeX = Math.max(0, x - 2);
+                const safeY = Math.max(0, y - 2);
+                const safeW = Math.min(mainCanvas.width - safeX, w + 4);
+                const safeH = Math.min(mainCanvas.height - safeY, h + 4);
+                
+                const imageData = ctx.getImageData(safeX, safeY, safeW, safeH);
                 const data = imageData.data;
 
                 // 简单的边缘拉伸填充算法
-                for (let j = 0; j < h; j++) {
-                    for (let i = 0; i < w; i++) {
-                        const idx = (j * w + i) * 4;
-                        // 获取选区上方或侧方的像素进行填充
-                        const sourceX = x + i;
-                        const sourceY = y - 2 > 0 ? y - 2 : y + h + 2;
-                        const sourcePixel = ctx.getImageData(sourceX, sourceY, 1, 1).data;
+                for (let j = 0; j < safeH; j++) {
+                    for (let i = 0; i < safeW; i++) {
+                        const idx = (j * safeW + i) * 4;
+                        
+                        // 从选区上下边缘采样
+                        const sourceX = safeX + i;
+                        const sourceY = safeY - 2 > 0 ? safeY - 2 : safeY + safeH + 2;
+                        
+                        const finalSourceX = Math.min(Math.max(0, sourceX), mainCanvas.width - 1);
+                        const finalSourceY = Math.min(Math.max(0, sourceY), mainCanvas.height - 1);
+                        
+                        const sourcePixel = ctx.getImageData(finalSourceX, finalSourceY, 1, 1).data;
                         
                         data[idx] = sourcePixel[0];
                         data[idx+1] = sourcePixel[1];
@@ -283,13 +388,29 @@
                     }
                 }
                 
-                ctx.putImageData(imageData, x, y);
+                // 创建离屏 Canvas 用于处理补全图块
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = mainCanvas.width;
+                tempCanvas.height = mainCanvas.height;
+                const tctx = tempCanvas.getContext('2d');
+                
+                tctx.putImageData(imageData, safeX, safeY);
+                
                 // 应用模糊以平滑边缘
-                ctx.filter = 'blur(4px)';
-                ctx.drawImage(mainCanvas, x, y, w, h, x, y, w, h);
-                ctx.filter = 'none';
+                tctx.filter = 'blur(4px)';
+                tctx.drawImage(tempCanvas, safeX, safeY, safeW, safeH, safeX, safeY, safeW, safeH);
+                tctx.filter = 'none';
 
-                mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                // 使用用户绘制的蒙版裁剪修补区域 (支持画笔的不规则形状)
+                tctx.globalCompositeOperation = 'destination-in';
+                tctx.drawImage(maskCanvas, 0, 0);
+                
+                // 将精确裁剪后的修补区域绘制回主画布
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.drawImage(tempCanvas, 0, 0);
+
+                clearMask();
+                
                 btn.disabled = false;
                 btn.innerText = '立即擦除';
                 
